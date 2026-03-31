@@ -1,0 +1,271 @@
+#pragma once
+
+#include <Arduino.h>
+#include <FastGPIO.h>
+#include "Romi32U4MotorParameters.h"
+#include "TeleplotUtils.h"
+
+// define the motor pins here
+#define PWM_L 10
+#define PWM_R 9
+#define DIR_L 16
+#define DIR_R 15
+
+#define LEFT_XOR   8
+#define LEFT_B     IO_E2
+#define RIGHT_XOR  7
+#define RIGHT_B    23
+
+#define OCR_L 0x8A
+#define OCR_R 0x88
+
+class Romi32U4MotorBase
+{
+protected: 
+    // For prettier printing
+    const String name;
+
+    // Used to control the motors in different ways
+    enum CTRL_MODE : uint8_t {CTRL_DIRECT, CTRL_SPEED};
+    volatile CTRL_MODE ctrlMode = CTRL_DIRECT;
+
+    // Used to manage PID coefficients; note that the defaults stink for speed control.
+    float Kp = KP_MOTOR;
+    float Ki = KI_MOTOR;
+    float Kd = KD_MOTOR;
+
+    // Used to keep track of the target speed, in counts / interval.
+    float targetSpeed = 0;
+
+    /**
+     * This is the speed of the motor, in "encoder counts / encoder interval".
+     * The encoder interval is set in Robot::InitializeMotorControlTimer.
+     */ 
+    volatile int16_t speed = 0;
+
+    // For tracking the error integral (sum)
+    float sumError = 0;
+
+    // For tracking derivative (difference)
+    float prevError = 0;
+
+    // Maximum effort
+    int16_t maxEffort = 420;
+
+    // Keeps track of encoder changes
+    volatile int16_t prevCount;
+    volatile int16_t encCount;
+    volatile int8_t lastA;
+    volatile int8_t lastB;
+
+    /**
+     * 
+     */
+    virtual void SetEffort(int16_t effort) = 0;
+
+    /** 
+     * Used to set the motor _effort_ directly, which is mostly used for testing.
+     * 
+     * Calling this function will switch the control mode to DIRECT, if needed, meaning speed control is lost.
+     */
+    void SetMotorEffortDirect(int16_t effort)
+    {
+        ctrlMode = CTRL_DIRECT;
+        SetEffort(effort);
+    }
+
+    /**
+     * calcEncoderDelta() takes a 'snapshot of the encoders and 
+     * stores the change since the last call, which has units of "encoder ticks/motor interval" 
+     * 
+     * We also use the function for zeroing the delta (for example, when switching control modes),
+     * so interrupts are cleared when accessing encCount.
+     */
+    int16_t CalcEncoderDelta(void)
+    {
+        cli();
+        int16_t currCount = encCount;
+        sei();
+
+        int16_t speed = currCount - prevCount;
+        prevCount = currCount;
+
+        return speed;
+    }
+
+    /**
+     * Sets the target speed in "encoder ticks/16 ms interval"
+     * */
+    void SetTargetSpeed(float target)
+    {
+        targetSpeed = target;
+
+        if(ctrlMode != CTRL_SPEED)
+        {
+            // Reset the error integral if we are switching from another mode
+            // Otherwise, the robot may jump due to residual integral
+            sumError = 0;
+
+            // Also set prevCount to encCount so to avoid speed jumps when switching mode
+            CalcEncoderDelta();
+        }
+
+        ctrlMode = CTRL_SPEED;
+    }
+
+    /**
+     * ControlMotorSpeed implements the PID controller. It should _not_ be called by user code.
+     * Instead, ControlMotorSpeed is called from Chassis::UpdateMotors, which is on a timer schedule.
+    */
+    void ControlMotorSpeed(void)
+    {
+        if(ctrlMode == CTRL_SPEED)
+        {
+            /**
+             * TODO: Implement PI controller. Only P at the moment.
+             */
+
+            // Calculate the error in speed
+            float error = targetSpeed - speed;
+
+            int16_t effort = Kp * error;
+
+            // Set the effort for the motor
+            SetEffort(effort);
+
+#ifdef __MOTOR_DEBUG__
+/**
+ * Debug statements formatted for Teleplot.
+ */
+            char title[20];
+
+            sprintf(title, "%s_target", name.c_str());
+            TeleplotPrint(title, targetSpeed);
+
+            sprintf(title, "%s_speed", name.c_str());
+            TeleplotPrint(title, speed);
+
+            sprintf(title, "%s_error", name.c_str());
+            TeleplotPrint(title, error);
+
+            sprintf(title, "%s_effort", name.c_str());
+            TeleplotPrint(title, effort);
+#endif
+        }    
+    }
+
+    static void AttachInterrupts(void);
+
+    /**
+     * InitializeMotorPWMTimer() should be called near the beginning of the program.
+     * It sets up Timer1 to run at a high frequency for motor PWM control.
+     * 
+     * Timer 1 has the following configuration:
+     * 
+     **  Prescaler of 1, so it counts at the system clock frequency
+     **  Outputs enabled on channels A (pin 9), B (pin 10). Output on C (pin 11) is optional (see below)
+     **  Fast PWM mode (counts up and rolls over at TOP, aka. "single-ended")
+     **  Top of 420
+     * 
+     * */
+    static void InitializePWMTimerAndInterrupts(void)
+    {
+        Serial.println("InitMotor()");
+
+        noInterrupts(); //disable interrupts while we set Timer1 registers
+
+        TCCR1A = 0xA2; // 0b10100010; //Fast PWM + enable A and B; change to 0xAA to enable C on pin 11
+        TCCR1B = 0x19; // 0b00011001; //Fast PWM
+        ICR1 = 420;    // There's a reason we run a little slower than the Pololu library.
+
+        //set all three outputs to zero
+        OCR1A = 0;
+        OCR1B = 0;
+        OCR1C = 0; //can be used to create a signal on pin 11; must enable output in TCCR1A above; must set pin 11 to OUTPUT
+        
+        /**
+         * Call a static function to set up the left and right motor interrupts
+         */
+        AttachInterrupts();
+
+        interrupts(); //re-enable interrupts
+
+        Serial.println("/InitMotor()");
+    }
+
+public:
+    Romi32U4MotorBase(const String& nm) : name(nm) {}
+    void SetPIDCoeffs(float p, float i, float d) {Kp = p; Ki = i; Kd = d; sumError = 0;}
+};
+
+template <uint8_t encXOR, uint8_t encB, uint8_t PWM, uint8_t DIR, uint16_t OCR> 
+    class Romi32U4EncodedMotor : public Romi32U4MotorBase
+{
+protected:
+    void InitializeMotor(void)
+    {
+        FastGPIO::Pin<PWM>::setOutputLow();
+        FastGPIO::Pin<DIR>::setOutputLow();
+
+        InitializeEncoder();
+    }
+
+    /**
+     * SetEffort is used internally to set the motor effort without changing the control mode.
+     */
+    void SetEffort(int16_t effort)
+    {
+        bool reverse = 0;
+
+        if (effort < 0)
+        {
+            effort = -effort; // Make dutycycle a positive quantity.
+            reverse = 1;      // Reverse the direction.
+        }
+        if (effort > maxEffort)
+        {
+            effort = maxEffort;
+        }
+
+        FastGPIO::Pin<DIR>::setOutput(reverse);
+
+        /**
+         * This line is a little esoteric, but it sets the duty cycle for the appropriate PWM pin.
+         * Note that TOP for the PWM is 420, so the duty cycle will be (effort / 420) * 100 (in %).
+         */
+        _SFR_MEM16(OCR) = effort;
+    }
+
+    void InitializeEncoder(void)
+    {    
+        Serial.println("InitEnc()");
+
+        // Set the pins as pulled-up inputs.
+        FastGPIO::Pin<encXOR>::setInputPulledUp();
+        FastGPIO::Pin<encB>::setInputPulledUp();
+
+        // Initialize the variables so that the speed will start as 0
+        lastB = FastGPIO::Pin<encB>::isInputHigh();
+        lastA = FastGPIO::Pin<encXOR>::isInputHigh() ^ lastB;
+
+        Serial.println("/InitEnc()");
+    }
+
+public:
+    Romi32U4EncodedMotor(const String& name) : Romi32U4MotorBase(name) {}
+    void ProcessEncoderTick(void) 
+    {
+        bool newB = FastGPIO::Pin<encB>::isInputHigh();
+        bool newA = FastGPIO::Pin<encXOR>::isInputHigh() ^ newB;
+
+        encCount += (lastA ^ newB) - (newA ^ lastB);
+
+        lastA = newA;
+        lastB = newB;
+    }
+
+    friend class Chassis; // Allow Chassis to call protected methods directly
+};
+
+extern Romi32U4EncodedMotor<LEFT_XOR, LEFT_B, PWM_L, DIR_L, OCR_L> leftMotor;
+extern Romi32U4EncodedMotor<RIGHT_XOR, RIGHT_B, PWM_R, DIR_R, OCR_R> rightMotor;
