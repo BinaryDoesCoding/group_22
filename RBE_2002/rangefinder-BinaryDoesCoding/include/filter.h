@@ -30,7 +30,7 @@ public:
 
 /**
  * For the buffered filters, we hard-code the sample count to make declaring 
- * arrays easier (the standard templates like vector don't always play nice \
+ * arrays easier (the standard templates like `vector` don't always play nice \
  * with microcontrollers).
  * 
  * Formally, the median for an even number of values is the average of the two in
@@ -45,13 +45,7 @@ class BufferedFilter : public Filter
 protected:
     unsigned char index = 0;
     float buffer[SAMPLE_COUNT];
-    BufferedFilter(void)
-    {
-        for (unsigned char i = 0; i < SAMPLE_COUNT; i++)
-        {
-            buffer[i] = 0;
-        }
-    }
+    BufferedFilter(void) {}
 
 public:
     float AddReading(const float&);

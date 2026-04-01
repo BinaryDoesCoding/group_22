@@ -66,37 +66,29 @@ bool HC_SR04::commandPing(void)
     bool pingSent = false;
     uint32_t currTime = millis();
 
-    // only if we're idle
-    if(state == IDLE)
+    if (state == IDLE)
     {
-      // check that at least 10 ms has expired since the echo was received to let echoes die out
-      if(currTime - lastPingCheck >= 10)
-      {
-          lastPingCheck = currTime; // update lastPingCheck
+        if (currTime - lastPingCheck >= 60)
+        {
+            lastPingCheck = currTime;
 
-          //disable interrupts while we adjust the ISR variables
-          cli();
-          pulseEnd = pulseStart = 0;
+            cli();
+            pulseEnd = 0;
+            pulseStart = 0;
+            state = PING_SENT;
+            sei();
 
-          //set state to sent
-          state = PING_SENT;
-          sei();
+            digitalWrite(trigPin, HIGH);
+            delayMicroseconds(12);
+            digitalWrite(trigPin, LOW);
 
-#ifdef __HC_DEBUG__
-          Serial.println("Ping");
-#endif
-
-          // toggle the trigger pin to send a chirp
-          digitalWrite(trigPin, HIGH); //commands a ping; leave high for the duration
-          delayMicroseconds(12); //datasheet says hold HIGH for 10us; resolution is 4us
-          digitalWrite(trigPin, LOW); //pin must be brought LOW
-
-          pingSent = true;
-      }
+            pingSent = true;
+        }
     }
-
-    // this will force a wait until 10 ms after the first time the device is idle
-    else lastPingCheck = currTime; // update lastPingCheck
+    else
+    {
+        lastPingCheck = currTime;
+    }
 
     return pingSent;
 }
@@ -105,38 +97,37 @@ bool HC_SR04::getDistance(float& distance)
 {
     bool retVal = false;
 
-    if(state == ERROR)
+    if (state == ERROR)
     {
-      lastPingCheck = millis();
-      state = IDLE;
+        lastPingCheck = millis();
+        state = IDLE;
     }
 
     uint32_t echoLength = 0;
 
-    if(state & ECHO_RECD)
+    if (state & ECHO_RECD)
     {
         cli();
         echoLength = (pulseEnd - pulseStart);
         state = IDLE;
         sei();
 
-        lastPingCheck = millis(); // this will assert a pause after receiving an echo
+        lastPingCheck = millis();
 
-        /**
-         * TODO: Filter out any pings that are longer than the maximum range
-         */
+        // Reject echoes that are too short or too long
+        // Rough usable bounds for HC-SR04
+        if (echoLength >= 150 && echoLength <= 25000)
+        {
+            distance = (echoLength - 1251.33f) / 36.85f;
 
-        /**
-         * TODO: Add conversion factor! Don't forget to update the retVal!
-         */
-
-        distance = (echoLength - 1251.33) / 36.85; // convert from us to cm!
-        retVal = true;
+            // Extra sanity clamp
+            if (distance >= 0.0f && distance <= 400.0f)
+            {
+                retVal = true;
+            }
+        }
     }
-    
-    /**
-     * By default, we auto-ping. Change this if you don't want to.
-     */
+
     commandPing();
 
     return retVal;

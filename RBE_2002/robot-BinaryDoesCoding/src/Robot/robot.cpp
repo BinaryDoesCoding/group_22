@@ -1,9 +1,12 @@
 #include "robot.h"
 #include "IRdecoder.h"
 #include "TeleplotUtils.h"
+#include <math.h>
 
 extern IRDecoder decoder;
 extern Robot robot;
+
+static float distance = 0.0f;
 
 void hcISR(void)
 {
@@ -15,73 +18,60 @@ void Robot::RangefinderISR(void)
     sr04.ISR_echo();
 }
 
+void Robot::SetSensorMode(DIST_SENSOR_MODE mode)
+{
+    sensorMode = mode;
+}
+
 void Robot::InitializeRobot(void)
 {
     InitializeDecoder();
 
-    /**
-     * Initialize the chassis, which includes motors, timer loops, etc.
-     */
     chassis.InititalizeChassis();
 
     pinMode(13, OUTPUT);
 
-    /**
-     * Initialize ultrasonic sensor
-     */
+    // Ultrasonic setup
     sr04.init(hcISR);
+
+    // Sharp IR setup
+    sharpIR.init();
 }
 
-/**
- * The main loop for your robot. Process both synchronous events (motor control),
- * and asynchronous events (IR presses, distance readings, etc.).
- */
 void Robot::RobotLoop(void)
 {
-    /**
-     * Handle any IR remote keypresses.
-     */
     int16_t keyCode = decoder.getKeyCode();
-    if (keyCode != -1) HandleKeyCode(keyCode);
+    if (keyCode != -1)
+    {
+        HandleKeyCode(keyCode);
+    }
 
-    /**
-     * SpinOnce() performs some low-level chassis computations. It returns true
-     * when the motor loop timer is executed, which allows you to synchronize tasks
-     * with the motor updates.
-     */
     if (chassis.SpinOnce())
     {
-        /**
-         * Put any motor-synchronous actions here.
-         */
         if (robotState == ROBOT_LINING)
         {
-            /**
-             * TODO: Line control in Lab 3
-             */
+            // TODO: Line control in Lab 3
         }
 
-        /**
-         * TODO: For a later lab on odometry, update pose and check for events.
-         */
+        // TODO: Odometry / other synchronous tasks later
     }
 
-    /**
-     * In Lab 2, set up messages and events for distance.
-     */
-    float distance = 0.0f;
-    if (sr04.getDistance(distance))
+    bool newReading = false;
+    float distanceReading = 0.0f;
+
+    if (sensorMode == SENSOR_SHARP_IR)
     {
-        HandleDistanceReading(distance);
+        newReading = sharpIR.getDistance(distanceReading);
+    }
+    else if (sensorMode == SENSOR_ULTRASONIC)
+    {
+        newReading = sr04.getDistance(distanceReading);
     }
 
-    /**
-     * TODO: In Lab 3, check the line sensor for an intersection
-     */
-
-    /**
-     * TODO: In Lab 4, we'll set up the IMU and related functionality
-     */
+    if (newReading)
+    {
+        HandleDistanceReading(distanceReading);
+    }
 }
 
 void Robot::EnterIdleState(void)
@@ -100,12 +90,29 @@ void Robot::EnterStandoffState(void)
     digitalWrite(13, LOW);
 }
 
+void Robot::EnterAligningState(void)
+{
+    robotState = ROBOT_ALIGNING;
+    chassis.SetTwist(0.0f, 0.0f);
+    digitalWrite(13, LOW);
+}
+
 void Robot::HandleDistanceReading(float distance)
 {
 #ifdef __DIST_DEBUG__
     Serial.print("raw distance: ");
     Serial.println(distance);
 #endif
+
+    // Reject impossible values before filtering
+    if (distance < 0.0f || distance > 400.0f)
+    {
+#ifdef __DIST_DEBUG__
+        Serial.print("Rejected distance: ");
+        Serial.println(distance);
+#endif
+        return;
+    }
 
     float filteredDistance = lowPass.CalcFiltered(distance);
 
@@ -117,13 +124,30 @@ void Robot::HandleDistanceReading(float distance)
     TeleplotPrint("raw", distance);
     TeleplotPrint("filtered", filteredDistance);
 
-    if (CheckApproachEvent(filteredDistance))
+    if (sensorMode == SENSOR_SHARP_IR)
     {
-        HandleApproachEvent();
+        TeleplotPrint("sensor_mode", 1);
     }
-    else if (CheckDepartureEvent(filteredDistance))
+    else
     {
-        HandleDepartureEvent();
+        TeleplotPrint("sensor_mode", 2);
+    }
+
+    if (robotState == ROBOT_STANDOFF)
+    {
+        if (CheckApproachEvent(filteredDistance))
+        {
+            HandleApproachEvent();
+        }
+        else if (CheckDepartureEvent(filteredDistance))
+        {
+            HandleDepartureEvent();
+        }
+    }
+
+    if (robotState == ROBOT_ALIGNING)
+    {
+        HandleAlignment(filteredDistance);
     }
 
     prevDistance = filteredDistance;
@@ -139,6 +163,11 @@ bool Robot::CheckDepartureEvent(float distance)
 {
     return (prevDistance <= STANDOFF_THRESHOLD_CM) &&
            (distance > STANDOFF_THRESHOLD_CM);
+}
+
+bool Robot::CheckAlignment(float distance)
+{
+    return fabs(distance - ALIGN_DISTANCE_CM) <= ALIGN_TOLERANCE_CM;
 }
 
 void Robot::HandleApproachEvent(void)
@@ -163,39 +192,118 @@ void Robot::HandleDepartureEvent(void)
     digitalWrite(13, LOW);
 }
 
-/**
- * Enter line following.
- */
+void Robot::HandleAlignment(float distance)
+{
+    if (robotState != ROBOT_ALIGNING) return;
+
+    float error = distance - ALIGN_DISTANCE_CM;
+
+    const float kp = 3.0f;
+    const float minSpeed = 0.5f;
+
+    float speed = kp * error;
+
+    if (fabs(error) <= ALIGN_TOLERANCE_CM)
+    {
+        chassis.SetTwist(0.0f, 0.0f);
+        digitalWrite(13, LOW);
+        return;
+    }
+
+    if (speed > FORWARD_SPEED_CM_S) speed = FORWARD_SPEED_CM_S;
+    if (speed < REVERSE_SPEED_CM_S) speed = REVERSE_SPEED_CM_S;
+
+    if (speed > 0.0f && speed < minSpeed) speed = minSpeed;
+    if (speed < 0.0f && speed > -minSpeed) speed = -minSpeed;
+
+    chassis.SetTwist(speed, 0.0f);
+    digitalWrite(13, HIGH);
+}
+
 void Robot::EnterLineFollowingState(float lineSpeed)
 {
-    /**
-     * TODO: In Lab 3, set baseSpeed and state
-     */
+    (void)lineSpeed;
+    robotState = ROBOT_LINING;
+}
+
+void Robot::EnterCenteringState(void)
+{
+    // TODO
+}
+
+void Robot::EnterTurningState(int8_t dir)
+{
+    (void)dir;
+    robotState = ROBOT_TURNING;
+}
+
+void Robot::EnterDrivingState(void)
+{
+    robotState = ROBOT_DRIVING;
 }
 
 void Robot::HandleIntersection(void)
 {
-    // Useful for debugging:
     Serial.println("X");
+    // TODO
+}
 
-    /**
-     * TODO: In Lab 3, build in navigation logic.
-     */
+bool Robot::CheckTurnComplete(void)
+{
+    // TODO
+    return false;
+}
+
+void Robot::HandleTurnComplete(void)
+{
+    // TODO
+}
+
+void Robot::SetDestination(int x, int y, float theta)
+{
+    (void)x;
+    (void)y;
+    (void)theta;
+    // TODO
+}
+
+void Robot::HandleDestinationReached(void)
+{
+    EnterIdleState();
 }
 
 void Robot::HandleObjectInRangeEvent(void)
 {
-    /**
-     * TODO: In Lab 2, handle event
-     */
+    // TODO
+}
+
+void Robot::HandlePitchUp(void)
+{
+    // TODO
+}
+
+void Robot::HandlePitchFlat(void)
+{
+    // TODO
 }
 
 void Robot::RangerFinderTest(void)
 {
-    float distance = 0.0f;
-    if (sr04.getDistance(distance))
+    float testDistance = 0.0f;
+    bool ok = false;
+
+    if (sensorMode == SENSOR_SHARP_IR)
+    {
+        ok = sharpIR.getDistance(testDistance);
+    }
+    else
+    {
+        ok = sr04.getDistance(testDistance);
+    }
+
+    if (ok)
     {
         Serial.print("Distance: ");
-        Serial.println(distance);
+        Serial.println(testDistance);
     }
 }
