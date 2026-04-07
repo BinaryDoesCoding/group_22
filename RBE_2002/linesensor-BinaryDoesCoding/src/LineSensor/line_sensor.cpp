@@ -1,4 +1,5 @@
-#include <line_sensor.h>
+#include "line_sensor.h"
+// line_sensor.cpp - Line sensor class method definitions
 
 bool LineSensor::CheckIntersection(const LineSensorReadings& readings)
 {
@@ -11,20 +12,19 @@ bool LineSensor::CheckIntersection(const LineSensorReadings& readings)
     bool onTape = true;
 
     /**
-     * TODO: Add hysteresis (after you get the basic event checking working).
+     * For now, basic intersection detection is:
+     * both sensors see dark.
+     *
+     * You can add hysteresis later.
      */
-    for(unsigned short i = 0; i < readings.elementCount; i++)
+    for (unsigned short i = 0; i < readings.elementCount; i++)
     {
-        if(readings.adcReadings[i] < darkThreshold) onTape = false;
+        if (readings.adcReadings[i] < darkThreshold)
+        {
+            onTape = false;
+        }
     }
 
-    /**
-     * This looks silly, but that's because the logic is wrong. It will be useful
-     * to keep track of whether or not the sensors all see tape, so we leave the
-     * skeleton here.
-     * 
-     * TODO: Create the proper event-checker logic.
-     */
     retVal = onTape;
 
     return retVal;

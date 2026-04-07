@@ -13,7 +13,7 @@
  * the arena
  */
 
-PololuLineSensor lineSensor(A0, A4, LIGHT_THRESHOLD, DARK_THRESHOLD);
+PololuLineSensor lineSensor(A6, A2, LIGHT_THRESHOLD, DARK_THRESHOLD);
 
 void setup(void)
 {
