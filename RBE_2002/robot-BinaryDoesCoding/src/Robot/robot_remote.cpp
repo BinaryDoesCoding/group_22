@@ -74,11 +74,20 @@ void Robot::HandleKeyCode(int16_t keyCode)
             break;
 
         case REWIND:
-            // start line following using entered number
-            EnterLineFollowingState(keyString.toInt());
+        {
+            float lineSpeed = LINE_FORWARD_SPEED_CM_S;
+
+            if (keyString.length() > 0)
+            {
+                lineSpeed = keyString.toFloat();
+            }
+
+            EnterLineFollowingState(lineSpeed);
             keyString = "";
-            Serial.println("Robot -> LINE FOLLOW");
+            Serial.print("Robot -> LINE FOLLOW, speed = ");
+            Serial.println(lineSpeed);
             break;
+        }
 
         case NUM_4:
         case NUM_5:
@@ -87,7 +96,6 @@ void Robot::HandleKeyCode(int16_t keyCode)
         case NUM_8:
         case NUM_9:
         case NUM_0_10:
-            // build numeric input string
             if (keyCode == NUM_0_10)
             {
                 keyString += '0';
@@ -100,6 +108,7 @@ void Robot::HandleKeyCode(int16_t keyCode)
             {
                 keyString += (char)(keyCode + 31);
             }
+
             Serial.print("keyString: ");
             Serial.println(keyString);
             break;

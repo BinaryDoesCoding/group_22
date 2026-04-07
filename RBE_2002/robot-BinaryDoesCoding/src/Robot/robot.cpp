@@ -1,3 +1,4 @@
+// robot.cpp - Main robot class implementation. This is where the bulk of the logic for the robot will go. It will manage the chassis and sensors and implement the state machine for the robot's behavior.
 #include "robot.h"
 #include "IRdecoder.h"
 #include "TeleplotUtils.h"
@@ -5,8 +6,6 @@
 
 extern IRDecoder decoder;
 extern Robot robot;
-
-static float distance = 0.0f;
 
 void hcISR(void)
 {
@@ -36,6 +35,9 @@ void Robot::InitializeRobot(void)
 
     // Sharp IR setup
     sharpIR.init();
+
+    // Line sensor setup
+    lineSensor.Init();
 }
 
 void Robot::RobotLoop(void)
@@ -46,11 +48,49 @@ void Robot::RobotLoop(void)
         HandleKeyCode(keyCode);
     }
 
+    unsigned long now = millis();
+
+    /**
+     * Check for intersections only while line following.
+     * Count only the rising edge, and ignore retriggers briefly.
+     */
+    if (robotState == ROBOT_LINING)
+    {
+        bool currentIntersectionState = lineSensor.CheckIntersection();
+
+        TeleplotPrint("intersection_state", currentIntersectionState ? 1.0f : 0.0f);
+        TeleplotPrint("intersection_count", (float)intersectionCount);
+
+        if ((now >= intersectionIgnoreUntilMs) &&
+            currentIntersectionState &&
+            !lastIntersectionState)
+        {
+            HandleIntersection();
+            intersectionIgnoreUntilMs = now + INTERSECTION_RETRIGGER_IGNORE_MS;
+        }
+
+        lastIntersectionState = currentIntersectionState;
+    }
+    else
+    {
+        lastIntersectionState = false;
+    }
+
     if (chassis.SpinOnce())
     {
         if (robotState == ROBOT_LINING)
         {
-            // TODO: Line control in Lab 3
+            int leftRaw = analogRead(LINE_LEFT_PIN);
+            int rightRaw = analogRead(LINE_RIGHT_PIN);
+            float lineError = lineSensor.CalcError();
+            float turnEffort = LINE_FOLLOW_KP * lineError;
+
+            chassis.SetTwist(lastLineFollowSpeed, turnEffort);
+
+            TeleplotPrint("line_left_raw", (float)leftRaw);
+            TeleplotPrint("line_right_raw", (float)rightRaw);
+            TeleplotPrint("line_error", lineError);
+            TeleplotPrint("line_turn_effort", turnEffort);
         }
 
         // TODO: Odometry / other synchronous tasks later
@@ -121,8 +161,8 @@ void Robot::HandleDistanceReading(float distance)
     Serial.println(filteredDistance);
 #endif
 
-    TeleplotPrint("raw", distance);
-    TeleplotPrint("filtered", filteredDistance);
+    TeleplotPrint("range_raw", distance);
+    TeleplotPrint("range_filtered", filteredDistance);
 
     if (sensorMode == SENSOR_SHARP_IR)
     {
@@ -222,8 +262,14 @@ void Robot::HandleAlignment(float distance)
 
 void Robot::EnterLineFollowingState(float lineSpeed)
 {
-    (void)lineSpeed;
     robotState = ROBOT_LINING;
+    lastLineFollowSpeed = lineSpeed;
+    lastIntersectionState = false;
+    intersectionIgnoreUntilMs = 0;
+    intersectionCount = 0;
+    chassis.SetTwist(lineSpeed, 0.0f);
+
+    Serial.println("Robot -> LINE FOLLOW");
 }
 
 void Robot::EnterCenteringState(void)
@@ -244,8 +290,18 @@ void Robot::EnterDrivingState(void)
 
 void Robot::HandleIntersection(void)
 {
-    Serial.println("X");
-    // TODO
+    intersectionCount++;
+
+    digitalWrite(13, !digitalRead(13));
+
+    Serial.print("Intersection count: ");
+    Serial.println(intersectionCount);
+
+    if (intersectionCount >= TARGET_INTERSECTION_COUNT)
+    {
+        Serial.println("Reached third intersection -> IDLE");
+        EnterIdleState();
+    }
 }
 
 bool Robot::CheckTurnComplete(void)
