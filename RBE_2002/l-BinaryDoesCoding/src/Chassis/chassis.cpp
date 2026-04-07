@@ -261,20 +261,18 @@ void Chassis::HandleBatteryTimer(void)
     float batteryVoltage = pinVoltage * 3.0f;   // A1 reads VIN/3
 
     const float BATTERY_OFF_V   = 1.0f;
-    const float BATTERY_LOW_V   = 7.5f;   // warning threshold
-    const float BATTERY_EMPTY_V = 6.0f;   // 0%
-    const float BATTERY_FULL_V  = 8.4f;   // 100%, good for rechargeables
+    const float BATTERY_LOW_V   = 7.5f;
+    const float BATTERY_EMPTY_V = 6.0f;
+    const float BATTERY_FULL_V  = 8.4f;
 
     float batteryPercent = ((batteryVoltage - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V)) * 100.0f;
     if (batteryPercent < 0.0f) batteryPercent = 0.0f;
     if (batteryPercent > 100.0f) batteryPercent = 100.0f;
 
-    if ((batteryVoltage > 1.0f) && (batteryVoltage < 7.5f))
+    if ((batteryVoltage > BATTERY_OFF_V) && (batteryVoltage < BATTERY_LOW_V))
     {
         batteryState = BATTERY_LOW;
 
-        // COM4A1..COM4A0 = 0b01
-        // Toggle OC4A (pin 13) on compare match
         TCCR4A &= ~((1 << COM4A1) | (1 << COM4A0));
         TCCR4A |= (1 << COM4A0);
     }
@@ -282,19 +280,27 @@ void Chassis::HandleBatteryTimer(void)
     {
         batteryState = BATTERY_OK;
 
-        // COM4A1..COM4A0 = 0b00
-        // Stop flashing
         TCCR4A &= ~((1 << COM4A1) | (1 << COM4A0));
     }
 
-    Serial.print(F("Battery: "));
-    Serial.print(batteryVoltage, 2);
-    Serial.print(F(" V ("));
-    Serial.print(batteryPercent, 0);
-    Serial.println(F("%)"));
+    static bool firstPrint = true;
+    static unsigned long lastBatteryPrintMs = 0;
+    unsigned long now = millis();
 
-    if (batteryState == BATTERY_LOW)
+    if (firstPrint || ((now - lastBatteryPrintMs) >= 600000UL))
     {
-        Serial.println(F("BATTERY LOW"));
+        firstPrint = false;
+        lastBatteryPrintMs = now;
+
+        Serial.print(F("Battery: "));
+        Serial.print(batteryVoltage, 2);
+        Serial.print(F(" V ("));
+        Serial.print(batteryPercent, 0);
+        Serial.println(F("%)"));
+
+        if (batteryState == BATTERY_LOW)
+        {
+            Serial.println(F("BATTERY LOW"));
+        }
     }
 }
